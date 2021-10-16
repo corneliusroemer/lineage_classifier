@@ -1,7 +1,13 @@
+##Memory reqs
+# 1e3 lineages * 3e4 sites * 5 bases * 1 Byte = 1e8 bytes = 100 MB
+# But only if memory efficient -> need np array for that
 ## Plan
 # Filter sequences down to designated pangos using tsv-filter
 # Read line by line of aligned sequence
 # Build 3D numpy array with counts at each position [lineage,position,sum of(A,C,G,T,-,N)]
+
+# Next steps:
+# 1. Use efficient numpy array for indexing, one per lineage as a start
 #%%
 import zstandard
 import io
@@ -64,7 +70,7 @@ with open(path, 'rb') as fh:
 
 
 # %%
-index['B.1.617.2'][2000]
+index['B.1']
 # %%
 index.keys()
 
