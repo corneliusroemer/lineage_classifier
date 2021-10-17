@@ -7,7 +7,11 @@ from pyzstd import ZstdDict, decompress
 import pandas as pd
 import numpy as np
 import re
-
+import tempfile
+import ray
+import traceback
+import psutil
+import gc
 
 Base = declarative_base()
 
@@ -122,18 +126,22 @@ def seq_to_array(seq: SeqRecord) -> np.array:
     array = np.apply_along_axis(to_array,0,sequence)
 
     count = 0
-    while (array[count][5]):
+    while (array[count][4]):
         try:
-            array[count][4:5]=[1,0]
+            array[count][4]=0
+            array[count][5]=1
         except:
-            print(array[count])
+            print(f"{seq.id} @ {count} : {array[0:count+2]} : {str(sequence[0:count+2])}")
+            traceback.print_stack()
         count += 1
     count = len(sequence) - 1
-    while (array[count][5]):
+    while (array[count][4]):
         try:
-            array[count][4:5]=[1,0]
+            array[count][4]=0
+            array[count][5]=1
         except:
-            print(array[count])
+            # print(f"{seq.id} @ {count} : {sequence[count-5:]}")
+            pass
         count -= 1
 
     return array
@@ -142,11 +150,12 @@ def aggregate_seqs(seqs: list[SeqRecord]) -> np.ndarray:
     """Aggregate a list of SeqRecords into a single numpy array"""
     aggregate = np.zeros((29903,6), dtype=np.uint32)
     for count, seq in enumerate(seqs):
-        if count % 200 == 0:
-            print(f"{count} of {len(seqs)} processed")
-        if count > 1000:
-            break
+        # if count % 10000 == 0:
+            # print(f"{seq.id:'%6s'}:{count:'%6u'} of {len(seqs):'%6u'} processed")
+        # if count > 1000:
+        #     break
         aggregate += seq_to_array(seq)
+    # print(f"{seq.id:'%6s'}:{count:'%6u'} of {len(seqs):'%6u'} processed")
     return aggregate
 
 def get_lineages_from_designation(lineages_path='lineages.csv'):
@@ -154,19 +163,45 @@ def get_lineages_from_designation(lineages_path='lineages.csv'):
     df = pd.read_csv(lineages_path)
     return df['lineage']
 
+def auto_garbage_collect(pct=80.0):
+    """
+    auto_garbage_collection - Call the garbage collection if memory used is greater than 80% of total available memory.
+                            This is called to deal with an issue in Ray not freeing up used memory.
+
+        pct - Default value of 80%.  Amount of memory in use that triggers the garbage collection call.
+    """
+    if psutil.virtual_memory().percent >= pct:
+        gc.collect()
+    return
+
+@ray.remote
 def generate_series_from_pango(lineage_name,db_path='gisaid.fasta.db') -> pd.Series:
     """Generate a pandas series from a pango designation"""
     strains = designated_strains_from_pango(lineage_name)
-    print(f"{len(strains)} strains designated for {lineage_name}")
     seqs = get_seq_from_db(db_path, strains)
-    print(f"{len(seqs)} strains found in database, missing {len(strains) - len(seqs)}")
+    print(f"{lineage_name:<10}:{len(strains)-len(seqs):6d} missing of {len(strains):6d} designated strains")
     aggregate = aggregate_seqs(seqs)
-    return pd.Series({lineage_name:aggregate})
+    return aggregate
 
-def generate_df_from_pangos(lineage_names,db_path='gisaid.fasta.db'):
+def generate_df_from_pangos(lineage_names,db_path='gisaid.fasta.db') -> dict:
     """Generate a pandas dataframe from a list of pango designations"""
-    return pd.concat([generate_series_from_pango(lineage_name,db_path) for lineage_name in lineage_names],axis=0)
+    matrix = {'index': [('index','lineage','counts')]}
+    matrix['array'] = np.zeros((len(lineage_names),29903,6), dtype=np.uint32)
+    parallel_count = 0
+    futures = []
+    for i, lineage_name in enumerate(lineage_names):
+        futures.append(generate_series_from_pango.remote(lineage_name,db_path))
+        auto_garbage_collect()
+    for i, result in enumerate(ray.get(futures)):
+        matrix['array'][i] = result
+    for i, lineage_name in enumerate(lineage_names):
+        matrix['index'].append((i,lineage_name,np.sum(matrix['array'][i][0])))
+    return matrix
 
 def generate_df_from_all(db_path='gisaid.fasta.db'):
     """Generate a pandas dataframe from all pango designations"""
     return generate_df_from_pangos(get_lineages_from_designation().unique().tolist())
+
+def export_np_matrix(df,filename=tempfile.TemporaryFile()):
+    """Export a pandas dataframe to a numpy matrix"""
+    np.savez_compressed(filename,array=df['array'],index=df['index'])
