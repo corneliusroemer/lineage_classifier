@@ -143,7 +143,6 @@ def seq_to_array(seq: SeqRecord) -> np.array:
             # print(f"{seq.id} @ {count} : {sequence[count-5:]}")
             pass
         count -= 1
-
     return array
 
 def aggregate_seqs(seqs: list[SeqRecord]) -> np.ndarray:
@@ -210,3 +209,22 @@ def import_np_matrix(filename) -> dict:
     """Import a numpy matrix from a file"""
     return np.load(filename)
 
+def sequence_to_likelihood(seq: SeqRecord) -> dict:
+    """Generate a likelihood for each pango lineage"""
+    matrix_dict = import_np_matrix('full_run.npz')
+    index = matrix_dict['index']
+    matrix = matrix_dict['array'].astype(np.float32)
+    seq_vec = seq_to_array(seq).astype(bool)
+    seq_vec[:100] = 0
+    seq_vec[-100:] = 0
+    #Flatten matrix and array for multiplication
+    #Normalise for anything but Ns
+    #Set all Ns to 0, multiply by 1/(count-N)
+    #Add constant to matrix to account for new mutations
+    matrix += 0.0001
+    matrix[:,:,5] = 0
+    matrix = matrix / matrix.sum(axis=2)[:,:,np.newaxis]
+    #Normalise by dividing by total count
+    #Or simpler: just use seq_array as mask then sum up 
+    res = {'df': pd.Series(np.add.reduce(matrix,axis=(1,2),where=seq_vec),index=index[1:,1]).sort_values(ascending=False)-seq_vec[:,0:5].sum(), 'seq':seq_vec}
+    return res
