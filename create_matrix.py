@@ -205,3 +205,8 @@ def generate_df_from_all(db_path='gisaid.fasta.db'):
 def export_np_matrix(df,filename=tempfile.TemporaryFile()):
     """Export a pandas dataframe to a numpy matrix"""
     np.savez_compressed(filename,array=df['array'],index=df['index'])
+
+def import_np_matrix(filename) -> dict:
+    """Import a numpy matrix from a file"""
+    return np.load(filename)
+

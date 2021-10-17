@@ -1,3 +1,12 @@
 *.xz
 *.zst
 *.csv
+*.txt
+*.npz
+*.db
+*.json
+*.yaml
+data
+*.fasta
+
+__pycache__
