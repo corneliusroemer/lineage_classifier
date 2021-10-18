@@ -1,3 +1,5 @@
+#%%
+from typing import OrderedDict
 from sqlalchemy import create_engine,Column, String
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.sql.sqltypes import BLOB
@@ -12,6 +14,7 @@ import ray
 import traceback
 import psutil
 import gc
+from collections import OrderedDict
 
 Base = declarative_base()
 
@@ -50,7 +53,7 @@ def nextstrain_from_pango_strain_name(nextstrain_name):
     split_name[0] = split_name[0].replace('_','')
     return '/'.join(split_name)
 
-def get_seq_from_db(db_path, strain_names: list[str]) -> list[SeqRecord]:
+def get_seq_from_db(db_path, strain_names: list) -> list:
     """Read in a db and strain names and returns list of Seq"""
     engine = connect_to_db(db_path)
     session = start_session(engine)
@@ -75,7 +78,19 @@ def canonicalize_string(in_string):
     """Convert a string to a canonical form"""
     return alpha_digits_regex.sub('',in_string.upper())
 
-def get_seq_not_in_db(db_path='gisaid.fasta.db') -> list[str]:
+def create_canonical_to_pango_lookup() -> dict:
+    """Create lookup table from canonical to pango designation"""
+    pango_to_canonical = {strain:canonicalize_string(strain) for strain in pd.read_csv('lineages.csv').taxon}
+    canonical_to_pango = {canonical:strain for strain, canonical in pango_to_canonical.items()}
+    return canonical_to_pango 
+
+canonical_to_pango = create_canonical_to_pango_lookup()
+
+def pango_from_nextstrain(nextstrain_name):
+    """Convert a nextstrain name to a pango name"""
+    return canonical_to_pango[canonicalize_string(nextstrain_name)]
+
+def get_seq_not_in_db(db_path='gisaid.fasta.db') -> list:
     """Return strains missing from db"""
     pango_strains = {strain:canonicalize_string(strain) for strain in pd.read_csv('lineages.csv').taxon}
     engine = connect_to_db(db_path)
@@ -97,7 +112,7 @@ def get_seq_not_in_db(db_path='gisaid.fasta.db') -> list[str]:
             print(strain)
     return strain_translation
 
-def designated_strains_from_pango(lineage_name,lineages_path='lineages.csv') -> list[str]:
+def designated_strains_from_pango(lineage_name,lineages_path='lineages.csv') -> list:
     """Read in designation csv and return a list of strains matching pango designation"""
     designations = pd.read_csv(lineages_path)
     return designations[designations.lineage == lineage_name].taxon.tolist()
@@ -145,7 +160,7 @@ def seq_to_array(seq: SeqRecord) -> np.array:
         count -= 1
     return array
 
-def aggregate_seqs(seqs: list[SeqRecord]) -> np.ndarray:
+def aggregate_seqs(seqs: list) -> np.ndarray:
     """Aggregate a list of SeqRecords into a single numpy array"""
     aggregate = np.zeros((29903,6), dtype=np.uint32)
     for count, seq in enumerate(seqs):
@@ -209,7 +224,7 @@ def import_np_matrix(filename) -> dict:
     """Import a numpy matrix from a file"""
     return np.load(filename)
 
-def sequence_to_likelihood(seq: SeqRecord, m=None) -> pd.Series:
+def sequence_to_likelihood(seq: SeqRecord, m=None) -> OrderedDict:
     """Generate a likelihood for each pango lineage"""
     if m is not None:
         matrix = m['matrix']
@@ -243,7 +258,7 @@ def sequence_to_likelihood(seq: SeqRecord, m=None) -> pd.Series:
     # Then set to 1 for mask
     #Normalise by dividing by total count
     #Or simpler: just use seq_array as mask then sum up 
-    res = pd.Series(np.add.reduce(matrix,axis=(1,2),where=seq_vec),index=index[1:,1]).sort_values(ascending=False)[0:2]
+    res = pd.Series(np.add.reduce(matrix,axis=(1,2),where=seq_vec),index=index[1:,1]).sort_values(ascending=False)[:].to_dict(OrderedDict)
 
     #Maybe do postchecking for parent? Does it have the necessary defining mutations? If not -> it's not this lineage. -> Local sanity checking
     #Find mutations not present in parent: If subset of these present -> it's child
@@ -253,27 +268,72 @@ def sequence_to_likelihood(seq: SeqRecord, m=None) -> pd.Series:
     return res
 
 @ray.remote
-def sequences_to_pango(seqs: list[SeqRecord]) -> pd.DataFrame:
-    df = pd.DataFrame(columns=['strain','lineage','likelihood'])
-    keys = []
-    series = []
+def sequences_to_pango(seqs: list[SeqRecord]) -> list((str,OrderedDict)):
+    df = pd.DataFrame(columns=['strain','designated_lineage','likelihood'])
+    series = [] 
     m = {'matrix': np.load('matrix.npy'), 'index' : np.load('index.npy')}
     for seq in seqs:
-        series.append(sequence_to_likelihood(seq,m))
-        keys.append(seq.id)
+        series.append((pango_from_nextstrain(seq.id), sequence_to_likelihood(seq,m)))
         # print(f"{seq.id:<40}  {series[-1].index[0]:<10}\n")  
-    df = pd.concat(series,keys=keys)
-    return df
+    return series
 
 def multi_sequences_to_pango(seqs: list[SeqRecord],threads=1) -> pd.DataFrame:
     n = len(seqs)
     futures = []
     for i in range(threads):
         futures.append(sequences_to_pango.remote(seqs[i*n//threads:(i+1)*n//threads]))
-    return pd.concat(ray.get(futures))
+    results = []
+    for result in ray.get(futures):
+        results.extend(result)
+    ray.shutdown()
+    df = pd.DataFrame.from_records(results,index='strain',columns=['strain','assignment'])
+    return df
 
-
-if __name__ == '__main__':
+def test_assign() -> pd.DataFrame:
     lin = pd.read_csv('lineages.csv')
-    sample = lin.groupby('lineage').agg(pd.DataFrame.sample).taxon.tolist()
-    print(multi_sequences_to_pango(get_seq_from_db('gisaid.fasta.db',sample[0:200]),threads=6))
+    samples = lin.groupby('lineage').agg(pd.DataFrame.sample)[:]
+    df = multi_sequences_to_pango(get_seq_from_db('gisaid.fasta.db',samples.taxon.tolist()),threads=6)
+    return df
+
+def test_run() -> pd.DataFrame:
+    lin = pd.read_csv('lineages.csv')
+    l = lin.set_index('taxon')
+    joined = test_assign().join(l)
+    joined['assigned_lineage'] = joined.assignment.apply(lambda x: list(x)[0])
+    joined['second'] = joined.assignment.apply(lambda x: list(x)[1])
+    joined['likelihood'] = joined.assignment.apply(lambda x: x[list(x)[0]])
+    joined['diff_second'] = joined.assignment.apply(lambda x: x[list(x)[1]]-x[list(x)[0]])
+    try:
+        joined['diff_true'] = joined.apply(lambda x: x[0][x[1]]-x[0][x[2]] if x[1] != x[2] else np.NAN,axis=1)
+    except:
+        pass
+    print(joined[joined.diff_true.notna()])
+    return joined
+    # for sample in samples:
+    #     df.loc[('Australia/QLD1080/2020',slice(None)),'designation'] = sample.lineage
+    # for row in df.loc[(:
+    # print(df.iloc[:,0])
+#%%
+if __name__ == '__main__':
+    print(test_run())
+
+# lin = pd.read_csv('lineages.csv')
+# samples = lin.groupby('lineage').agg(pd.DataFrame.sample)[0:50]
+
+# df = pd.DataFrame(multi_sequences_to_pango(get_seq_from_db('gisaid.fasta.db',samples.taxon.tolist()),threads=6),columns=['likelihood'])
+
+
+# #%%
+# lin = pd.read_csv('lineages.csv',index='taxon')
+# samples = lin.groupby('lineage').agg(pd.DataFrame.sample)[0:20]
+# df = multi_sequences_to_pango(get_seq_from_db('gisaid.fasta.db',samples.taxon.tolist()),threads=6)
+# #%%
+# df.join(lin,on='strain',how='left')
+# # %%
+
+# %%
+
+# Generate metrics for certainty based on diff_second, and maybe even diff_third
+# Predict if true or not based on likelihood,diff_second, diff_third etc -> nice separator
+# joined[joined.diff_true.isna() & (joined.diff_second > -50)]['diff_second'].hist(bins=25)
+# joined[joined.diff_true.notna()]['diff_second'].hist()
