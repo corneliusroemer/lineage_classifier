@@ -268,7 +268,7 @@ def sequence_to_likelihood(seq: SeqRecord, m=None) -> OrderedDict:
     return res
 
 @ray.remote
-def sequences_to_pango(seqs: list[SeqRecord]) -> list((str,OrderedDict)):
+def sequences_to_pango(seqs: list) -> list:
     df = pd.DataFrame(columns=['strain','designated_lineage','likelihood'])
     series = [] 
     m = {'matrix': np.load('matrix.npy'), 'index' : np.load('index.npy')}
@@ -277,7 +277,7 @@ def sequences_to_pango(seqs: list[SeqRecord]) -> list((str,OrderedDict)):
         # print(f"{seq.id:<40}  {series[-1].index[0]:<10}\n")  
     return series
 
-def multi_sequences_to_pango(seqs: list[SeqRecord],threads=1) -> pd.DataFrame:
+def multi_sequences_to_pango(seqs: list,threads=1) -> pd.DataFrame:
     n = len(seqs)
     futures = []
     for i in range(threads):
