@@ -243,7 +243,7 @@ def sequence_to_likelihood(seq: SeqRecord, m=None) -> pd.Series:
     # Then set to 1 for mask
     #Normalise by dividing by total count
     #Or simpler: just use seq_array as mask then sum up 
-    res = pd.Series(np.add.reduce(matrix,axis=(1,2),where=seq_vec),index=index[1:,1]).sort_values(ascending=False)[0:3]
+    res = pd.Series(np.add.reduce(matrix,axis=(1,2),where=seq_vec),index=index[1:,1]).sort_values(ascending=False)[0:2]
 
     #Maybe do postchecking for parent? Does it have the necessary defining mutations? If not -> it's not this lineage. -> Local sanity checking
     #Find mutations not present in parent: If subset of these present -> it's child
@@ -252,6 +252,7 @@ def sequence_to_likelihood(seq: SeqRecord, m=None) -> pd.Series:
 
     return res
 
+@ray.remote
 def sequences_to_pango(seqs: list[SeqRecord]) -> pd.DataFrame:
     df = pd.DataFrame(columns=['strain','lineage','likelihood'])
     keys = []
@@ -260,9 +261,19 @@ def sequences_to_pango(seqs: list[SeqRecord]) -> pd.DataFrame:
     for seq in seqs:
         series.append(sequence_to_likelihood(seq,m))
         keys.append(seq.id)
-        print(f"{seq.id}\n{series[-1].index[0]} {series[-1][0]}\n")  
+        # print(f"{seq.id:<40}  {series[-1].index[0]:<10}\n")  
     df = pd.concat(series,keys=keys)
     return df
 
+def multi_sequences_to_pango(seqs: list[SeqRecord],threads=1) -> pd.DataFrame:
+    n = len(seqs)
+    futures = []
+    for i in range(threads):
+        futures.append(sequences_to_pango.remote(seqs[i*n//threads:(i+1)*n//threads]))
+    return pd.concat(ray.get(futures))
+
+
 if __name__ == '__main__':
-    print(sequences_to_pango(get_seq_from_db('gisaid.fasta.db',['Colombia/MAG-INS-VG-1646/2021','Germany/NW-RKI-I-181655/2021','Belgium/Jessa_55-2117-000004/2021','Wuhan/Hu-1/2019','USA/NJ-CDC-LC0049753/2021','USA/NJ-CDC-LC0049822/2021','USA/NC-CDC-LC0050148/2021','USA/PA-CDC-LC0051106/2021'])))
+    lin = pd.read_csv('lineages.csv')
+    sample = lin.groupby('lineage').agg(pd.DataFrame.sample).taxon.tolist()
+    print(multi_sequences_to_pango(get_seq_from_db('gisaid.fasta.db',sample[0:200]),threads=6))
