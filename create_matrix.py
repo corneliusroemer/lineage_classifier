@@ -217,6 +217,7 @@ def sequence_to_likelihood(seq: SeqRecord) -> dict:
     seq_vec = seq_to_array(seq).astype(bool)
     seq_vec[:100] = 0
     seq_vec[-100:] = 0
+    ref = seq_to_array(get_seq_from_db('gisaid.fasta.db', ['Wuhan/Hu-1/2019'])[0]).astype(bool)
     #Flatten matrix and array for multiplication
     #Normalise for anything but Ns
     #Set all Ns to 0, multiply by 1/(count-N)
@@ -224,7 +225,21 @@ def sequence_to_likelihood(seq: SeqRecord) -> dict:
     matrix += 0.0001
     matrix[:,:,5] = 0
     matrix = matrix / matrix.sum(axis=2)[:,:,np.newaxis]
+    matrix[:,-100:,:] = 0
+    matrix[:,:100,:] = 0
+    # Masking bad sites S:95 and S:142
+    matrix[:,[21845,21986],:] = 1
+
+    # Set to 1 if >0.5 remain at reference
+    mask = np.logical_and((matrix > 0.5).astype(bool), np.repeat([ref],len(matrix),axis=0))
+    np.putmask(matrix,mask,1)
+    # Mask with reference
+    # Then check if >0.5 to refine mask
+    # Then set to 1 for mask
     #Normalise by dividing by total count
     #Or simpler: just use seq_array as mask then sum up 
     res = {'df': pd.Series(np.add.reduce(matrix,axis=(1,2),where=seq_vec),index=index[1:,1]).sort_values(ascending=False)-seq_vec[:,0:5].sum(), 'seq':seq_vec}
     return res
+
+if __name__ == '__main__':
+    sequence_to_likelihood(get_seq_from_db('gisaid.fasta.db',['Denmark/DCGC-156479/2021'])[0])['df'][:30]
