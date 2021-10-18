@@ -8,5 +8,6 @@
 *.yaml
 data
 *.fasta
+*.npy   
 
 __pycache__

@@ -209,37 +209,58 @@ def import_np_matrix(filename) -> dict:
     """Import a numpy matrix from a file"""
     return np.load(filename)
 
-def sequence_to_likelihood(seq: SeqRecord) -> dict:
+def sequence_to_likelihood(seq: SeqRecord) -> pd.Series:
     """Generate a likelihood for each pango lineage"""
-    matrix_dict = import_np_matrix('full_run.npz')
-    index = matrix_dict['index']
-    matrix = matrix_dict['array'].astype(np.float32)
+    try: 
+        matrix = np.load('matrix.npy')
+        index = np.load('index.npy')
+    except:
+        matrix_dict = import_np_matrix('full_run.npz')
+        index = matrix_dict['index']
+        matrix = matrix_dict['array'].astype(np.float32)
+        #Flatten matrix and array for multiplication
+        #Normalise for anything but Ns
+        #Set all Ns to 0, multiply by 1/(count-N)
+        #Add constant to matrix to account for new mutations
+        matrix[:,:,5] = 0
+        matrix += 0.001
+        matrix = matrix / matrix.sum(axis=2)[:,:,np.newaxis]
+        # Masking bad sites S:95 and S:142
+        #matrix[:,[21845,21986],:] = 1
+        matrix = np.log(matrix)
+        np.save('matrix.npy',matrix)
+        np.save('index.npy',index)
     seq_vec = seq_to_array(seq).astype(bool)
     seq_vec[:100] = 0
     seq_vec[-100:] = 0
-    ref = seq_to_array(get_seq_from_db('gisaid.fasta.db', ['Wuhan/Hu-1/2019'])[0]).astype(bool)
-    #Flatten matrix and array for multiplication
-    #Normalise for anything but Ns
-    #Set all Ns to 0, multiply by 1/(count-N)
-    #Add constant to matrix to account for new mutations
-    matrix += 0.0001
-    matrix[:,:,5] = 0
-    matrix = matrix / matrix.sum(axis=2)[:,:,np.newaxis]
-    matrix[:,-100:,:] = 0
-    matrix[:,:100,:] = 0
-    # Masking bad sites S:95 and S:142
-    matrix[:,[21845,21986],:] = 1
-
+    seq_vec[:,5] = 0
+    # ref = seq_to_array(get_seq_from_db('gisaid.fasta.db', ['Wuhan/Hu-1/2019'])[0]).astype(bool)
     # Set to 1 if >0.5 remain at reference
-    mask = np.logical_and((matrix > 0.5).astype(bool), np.repeat([ref],len(matrix),axis=0))
-    np.putmask(matrix,mask,1)
+    # mask = np.logical_and((matrix > 0.1).astype(bool), np.repeat([ref],len(matrix),axis=0))
+    # np.putmask(matrix,mask,1)
     # Mask with reference
     # Then check if >0.5 to refine mask
     # Then set to 1 for mask
     #Normalise by dividing by total count
     #Or simpler: just use seq_array as mask then sum up 
-    res = {'df': pd.Series(np.add.reduce(matrix,axis=(1,2),where=seq_vec),index=index[1:,1]).sort_values(ascending=False)-seq_vec[:,0:5].sum(), 'seq':seq_vec}
+    res = pd.Series(np.add.reduce(matrix,axis=(1,2),where=seq_vec),index=index[1:,1]).sort_values(ascending=False)[0:3]
+
+    #Maybe do postchecking for parent? Does it have the necessary defining mutations? If not -> it's not this lineage. -> Local sanity checking
+    #Find mutations not present in parent: If subset of these present -> it's child
+
+    #Penalize missing mutations more -> not the real solution here
+
     return res
 
+def sequences_to_pango(seqs: list[SeqRecord]) -> pd.DataFrame:
+    df = pd.DataFrame(columns=['strain','lineage','likelihood'])
+    keys = []
+    series = []
+    for seq in seqs:
+        series.append(sequence_to_likelihood(seq))
+        keys.append(seq.id)
+    df = pd.concat(series,keys=keys)
+    return df
+
 if __name__ == '__main__':
-    sequence_to_likelihood(get_seq_from_db('gisaid.fasta.db',['Denmark/DCGC-156479/2021'])[0])['df'][:30]
+    print(sequences_to_pango(get_seq_from_db('gisaid.fasta.db',['Belgium/Jessa_55-2117-000004/2021','Wuhan/Hu-1/2019','USA/NJ-CDC-LC0049753/2021','USA/NJ-CDC-LC0049822/2021','USA/NC-CDC-LC0050148/2021','USA/PA-CDC-LC0051106/2021'])))
