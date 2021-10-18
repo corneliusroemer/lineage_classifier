@@ -209,12 +209,12 @@ def import_np_matrix(filename) -> dict:
     """Import a numpy matrix from a file"""
     return np.load(filename)
 
-def sequence_to_likelihood(seq: SeqRecord) -> pd.Series:
+def sequence_to_likelihood(seq: SeqRecord, m=None) -> pd.Series:
     """Generate a likelihood for each pango lineage"""
-    try: 
-        matrix = np.load('matrix.npy')
-        index = np.load('index.npy')
-    except:
+    if m is not None:
+        matrix = m['matrix']
+        index = m['index']
+    else:
         matrix_dict = import_np_matrix('full_run.npz')
         index = matrix_dict['index']
         matrix = matrix_dict['array'].astype(np.float32)
@@ -256,11 +256,13 @@ def sequences_to_pango(seqs: list[SeqRecord]) -> pd.DataFrame:
     df = pd.DataFrame(columns=['strain','lineage','likelihood'])
     keys = []
     series = []
+    m = {'matrix': np.load('matrix.npy'), 'index' : np.load('index.npy')}
     for seq in seqs:
-        series.append(sequence_to_likelihood(seq))
+        series.append(sequence_to_likelihood(seq,m))
         keys.append(seq.id)
+        print(f"{seq.id}\n{series[-1].index[0]} {series[-1][0]}\n")  
     df = pd.concat(series,keys=keys)
     return df
 
 if __name__ == '__main__':
-    print(sequences_to_pango(get_seq_from_db('gisaid.fasta.db',['Belgium/Jessa_55-2117-000004/2021','Wuhan/Hu-1/2019','USA/NJ-CDC-LC0049753/2021','USA/NJ-CDC-LC0049822/2021','USA/NC-CDC-LC0050148/2021','USA/PA-CDC-LC0051106/2021'])))
+    print(sequences_to_pango(get_seq_from_db('gisaid.fasta.db',['Colombia/MAG-INS-VG-1646/2021','Germany/NW-RKI-I-181655/2021','Belgium/Jessa_55-2117-000004/2021','Wuhan/Hu-1/2019','USA/NJ-CDC-LC0049753/2021','USA/NJ-CDC-LC0049822/2021','USA/NC-CDC-LC0050148/2021','USA/PA-CDC-LC0051106/2021'])))
