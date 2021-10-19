@@ -136,7 +136,7 @@ def to_array(c:np.uint8) -> np.array:
 
 def seq_to_array(seq: SeqRecord) -> np.array:
     # Maybe speed up by using sparse notation then converting?
-    sequence = np.frombuffer(bytes(seq.seq),dtype=np.uint8).copy()
+    sequence = np.frombuffer(seq.seq.encode(encoding='ascii'),dtype=np.uint8).copy()
 
     array = np.apply_along_axis(to_array,0,sequence)
 
@@ -160,6 +160,7 @@ def seq_to_array(seq: SeqRecord) -> np.array:
         count -= 1
     return array
 
+@ray.remote
 def aggregate_seqs(seqs: list) -> np.ndarray:
     """Aggregate a list of SeqRecords into a single numpy array"""
     aggregate = np.zeros((29903,6), dtype=np.uint32)
@@ -188,14 +189,12 @@ def auto_garbage_collect(pct=80.0):
         gc.collect()
     return
 
-@ray.remote
-def generate_series_from_pango(lineage_name,db_path='gisaid.fasta.db') -> pd.Series:
+def generate_series_from_pango(lineage_name,db_path='gisaid.fasta.db'):
     """Generate a pandas series from a pango designation"""
     strains = designated_strains_from_pango(lineage_name)
     seqs = get_seq_from_db(db_path, strains)
     print(f"{lineage_name:<10}:{len(strains)-len(seqs):6d} missing of {len(strains):6d} designated strains")
-    aggregate = aggregate_seqs(seqs)
-    return aggregate
+    return aggregate_seqs.remote(seqs)
 
 def generate_df_from_pangos(lineage_names,db_path='gisaid.fasta.db') -> dict:
     """Generate a pandas dataframe from a list of pango designations"""
@@ -204,8 +203,7 @@ def generate_df_from_pangos(lineage_names,db_path='gisaid.fasta.db') -> dict:
     parallel_count = 0
     futures = []
     for i, lineage_name in enumerate(lineage_names):
-        futures.append(generate_series_from_pango.remote(lineage_name,db_path))
-        auto_garbage_collect()
+        futures.append(generate_series_from_pango(lineage_name))
     for i, result in enumerate(ray.get(futures)):
         matrix['array'][i] = result
     for i, lineage_name in enumerate(lineage_names):
